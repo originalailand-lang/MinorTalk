@@ -1,103 +1,182 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { supabase } from "../lib/supabaseClient";
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
+type RankItem = { id: string; name: string; count: number };
+
+export default function HomePage() {
+  // ⬇️ 환경변수 없으면 안내 (hooks 호출 전 조기 반환이므로 안전)
+  if (!supabase) {
+    return (
+      <main className="min-h-screen p-6">
+        <h1 className="text-xl font-semibold">환경 설정이 필요합니다</h1>
+        <p className="mt-2 opacity-70">
+          <code>NEXT_PUBLIC_SUPABASE_URL</code> / <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> 를
+          .env.local 및 Vercel(Production)에 추가 후 Redeploy 하세요.
+        </p>
+        <p className="mt-2 text-sm">
+          상태 확인: <a className="underline" href="/api/env">/api/env</a>
+        </p>
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
+    );
+  }
+
+  const sb = supabase!;
+  const router = useRouter();
+
+  // 인증 상태
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [isAuthed, setIsAuthed] = useState(false);
+  const [displayName, setDisplayName] = useState<string | null>(null);
+
+  // 방 검색
+  const [keyword, setKeyword] = useState("");
+  const normalized = useMemo(() => keyword.normalize("NFC").trim(), [keyword]);
+  const [searchBusy, setSearchBusy] = useState(false);
+
+  // 랭킹
+  const [ranking, setRanking] = useState<RankItem[]>([]);
+  const [rankBusy, setRankBusy] = useState(false);
+
+  useEffect(() => {
+    const run = async () => {
+      const { data } = await sb.auth.getSession();
+      const user = data.session?.user ?? null;
+      setIsAuthed(Boolean(user));
+      const dn = (user?.user_metadata as { display_name?: string } | undefined)?.display_name ?? null;
+      setDisplayName(dn);
+      setLoadingAuth(false);
+    };
+    run();
+  }, [sb]);
+
+  useEffect(() => {
+    const loadRanking = async () => {
+      setRankBusy(true);
+      const { data: rooms, error } = await sb.from("rooms").select("id,name");
+      if (error || !rooms) {
+        setRanking([]);
+        setRankBusy(false);
+        return;
+      }
+
+      const results: RankItem[] = [];
+      for (const r of rooms) {
+        const { count } = await sb
+          .from("messages")
+          .select("id", { count: "exact", head: true })
+          .eq("room_id", r.id);
+        results.push({ id: r.id, name: r.name, count: count ?? 0 });
+      }
+      results.sort((a, b) => b.count - a.count);
+      setRanking(results.slice(0, 10));
+      setRankBusy(false);
+    };
+    loadRanking();
+  }, [sb]);
+
+  const goToRoom = async () => {
+    if (!normalized) return;
+    setSearchBusy(true);
+
+    // 이름 완전일치 방 찾기
+    const { data: found, error: findErr } = await sb
+      .from("rooms")
+      .select("id, name")
+      .eq("name", normalized)
+      .maybeSingle();
+
+    let roomId = found?.id as string | undefined;
+
+    // 없으면 생성
+    if (!findErr && !roomId) {
+      const { data: created, error: createErr } = await sb
+        .from("rooms")
+        .insert({ name: normalized })
+        .select("id")
+        .single();
+      if (createErr) {
+        alert(createErr.message);
+        setSearchBusy(false);
+        return;
+      }
+      roomId = created!.id;
+    }
+
+    setSearchBusy(false);
+    router.push(`/chat?room=${encodeURIComponent(roomId!)}`);
+  };
+
+  return (
+    <main className="min-h-screen p-6">
+      {/* 헤더 (15%) */}
+      <header className="flex items-center justify-between h-[15vh]">
+        <Link href="/" className="text-2xl font-bold">Minor Talk</Link>
+        <nav className="flex gap-3">
+          {loadingAuth ? (
+            <span>…</span>
+          ) : isAuthed ? (
+            <>
+              <span className="opacity-70 text-sm">안녕하세요{displayName ? `, ${displayName}` : "!"}</span>
+              <Link href="/chat" className="underline">채팅 들어가기</Link>
+            </>
+          ) : (
+            <>
+              <Link href="/auth/signin" className="underline">로그인</Link>
+              <Link href="/auth/signup" className="underline">회원가입</Link>
+            </>
+          )}
+        </nav>
+      </header>
+
+      {/* 검색 (25%) */}
+      <section className="h-[25vh] flex flex-col items-center justify-center gap-3">
+        <h1 className="text-3xl font-extrabold">방 이름으로 바로 입장</h1>
+        <div className="w-full max-w-xl flex gap-2">
+          <input
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            className="flex-1 border p-3 rounded"
+            placeholder="예: general, 개발, 영화토론"
+            onKeyDown={(e) => e.key === "Enter" && goToRoom()}
           />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+          <button disabled={!normalized || searchBusy} onClick={goToRoom} className="border px-4 rounded">
+            {searchBusy ? "입장 중…" : "입장"}
+          </button>
+        </div>
+      </section>
+
+      {/* 광고/프로모 (20%) */}
+      <section className="h-[20vh] grid place-items-center border rounded">광고/프로모 영역</section>
+
+      {/* 랭킹 (40%) */}
+      <section className="mt-6">
+        <h2 className="font-semibold mb-2">지금 인기 방 TOP 10</h2>
+        <div className="h-[40vh] overflow-y-auto border rounded">
+          {rankBusy ? (
+            <div className="p-4 opacity-70">랭킹 불러오는 중…</div>
+          ) : ranking.length === 0 ? (
+            <div className="p-4 opacity-70">아직 생성된 방이 없어요.</div>
+          ) : (
+            <ol>
+              {ranking.map((r, i) => (
+                <li key={r.id} className="p-3 flex justify-between border-b">
+                  <button
+                    onClick={() => (window.location.href = `/chat?room=${encodeURIComponent(r.id)}`)}
+                    className="underline"
+                  >
+                    {i + 1}. {r.name}
+                  </button>
+                  <span className="opacity-70 text-sm">메시지 {r.count}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      </section>
+    </main>
   );
 }
