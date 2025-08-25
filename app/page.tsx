@@ -4,11 +4,12 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 type RankItem = { id: string; name: string; count: number };
 
 export default function HomePage() {
-  // ⬇️ 환경변수 없으면 안내 (hooks 호출 전 조기 반환이므로 안전)
+  // ✅ 바깥에서만 env 가드 (훅 호출 전)
   if (!supabase) {
     return (
       <main className="min-h-screen p-6">
@@ -23,8 +24,11 @@ export default function HomePage() {
       </main>
     );
   }
+  // ✅ supabase 확정 후 내부 컴포넌트 렌더 (훅은 내부에서만 호출)
+  return <HomeInner sb={supabase} />;
+}
 
-  const sb = supabase!;
+function HomeInner({ sb }: { sb: SupabaseClient }) {
   const router = useRouter();
 
   // 인증 상태
@@ -46,7 +50,8 @@ export default function HomePage() {
       const { data } = await sb.auth.getSession();
       const user = data.session?.user ?? null;
       setIsAuthed(Boolean(user));
-      const dn = (user?.user_metadata as { display_name?: string } | undefined)?.display_name ?? null;
+      const dn =
+        (user?.user_metadata as { display_name?: string } | undefined)?.display_name ?? null;
       setDisplayName(dn);
       setLoadingAuth(false);
     };
@@ -82,7 +87,6 @@ export default function HomePage() {
     if (!normalized) return;
     setSearchBusy(true);
 
-    // 이름 완전일치 방 찾기
     const { data: found, error: findErr } = await sb
       .from("rooms")
       .select("id, name")
@@ -91,7 +95,6 @@ export default function HomePage() {
 
     let roomId = found?.id as string | undefined;
 
-    // 없으면 생성
     if (!findErr && !roomId) {
       const { data: created, error: createErr } = await sb
         .from("rooms")
@@ -114,19 +117,29 @@ export default function HomePage() {
     <main className="min-h-screen p-6">
       {/* 헤더 (15%) */}
       <header className="flex items-center justify-between h-[15vh]">
-        <Link href="/" className="text-2xl font-bold">Minor Talk</Link>
+        <Link href="/" className="text-2xl font-bold">
+          Minor Talk
+        </Link>
         <nav className="flex gap-3">
           {loadingAuth ? (
             <span>…</span>
           ) : isAuthed ? (
             <>
-              <span className="opacity-70 text-sm">안녕하세요{displayName ? `, ${displayName}` : "!"}</span>
-              <Link href="/chat" className="underline">채팅 들어가기</Link>
+              <span className="opacity-70 text-sm">
+                안녕하세요{displayName ? `, ${displayName}` : "!"}
+              </span>
+              <Link href="/chat" className="underline">
+                채팅 들어가기
+              </Link>
             </>
           ) : (
             <>
-              <Link href="/auth/signin" className="underline">로그인</Link>
-              <Link href="/auth/signup" className="underline">회원가입</Link>
+              <Link href="/auth/signin" className="underline">
+                로그인
+              </Link>
+              <Link href="/auth/signup" className="underline">
+                회원가입
+              </Link>
             </>
           )}
         </nav>
@@ -143,14 +156,20 @@ export default function HomePage() {
             placeholder="예: general, 개발, 영화토론"
             onKeyDown={(e) => e.key === "Enter" && goToRoom()}
           />
-          <button disabled={!normalized || searchBusy} onClick={goToRoom} className="border px-4 rounded">
+          <button
+            disabled={!normalized || searchBusy}
+            onClick={goToRoom}
+            className="border px-4 rounded"
+          >
             {searchBusy ? "입장 중…" : "입장"}
           </button>
         </div>
       </section>
 
       {/* 광고/프로모 (20%) */}
-      <section className="h-[20vh] grid place-items-center border rounded">광고/프로모 영역</section>
+      <section className="h-[20vh] grid place-items-center border rounded">
+        광고/프로모 영역
+      </section>
 
       {/* 랭킹 (40%) */}
       <section className="mt-6">
@@ -165,7 +184,9 @@ export default function HomePage() {
               {ranking.map((r, i) => (
                 <li key={r.id} className="p-3 flex justify-between border-b">
                   <button
-                    onClick={() => (window.location.href = `/chat?room=${encodeURIComponent(r.id)}`)}
+                    onClick={() =>
+                      router.push(`/chat?room=${encodeURIComponent(r.id)}`)
+                    }
                     className="underline"
                   >
                     {i + 1}. {r.name}
